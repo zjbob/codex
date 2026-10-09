@@ -354,6 +354,92 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
 }
 
 #[test]
+#[ignore = "requires matching sandbox helpers and an explicitly provisioned CODEX_HOME"]
+fn elevated_reopened_write_root_preserves_readonly_ancestor() {
+    let _account_guard =
+        WindowsSandboxAccountTestGuard::acquire().expect("lock Windows sandbox test accounts");
+    let _guard = legacy_process_test_guard();
+    let fixture = tempfile::tempdir_in(sandbox_cwd()).expect("fixture");
+    let workspace = fixture.path().join("workspace");
+    let protected = workspace.join(".agents");
+    let sessions = protected.join("sessions");
+    fs::create_dir_all(&sessions).expect("sessions");
+    fs::write(workspace.join("README.md"), "read-ok").expect("read fixture");
+    fs::write(protected.join("protected.txt"), "protected").expect("protected fixture");
+    let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("provisioned CODEX_HOME"));
+    let command = format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+  if ((Get-Content -LiteralPath './README.md' -Raw) -ne 'read-ok') {{ throw 'read mismatch' }}
+  foreach ($p in @('./ordinary.txt', './.agents/sessions/own.txt')) {{
+    [IO.File]::WriteAllText($p, 'write-ok')
+    if ([IO.File]::ReadAllText($p) -ne 'write-ok') {{ throw 'write mismatch' }}
+    [IO.File]::Delete($p)
+    if ([IO.File]::Exists($p)) {{ throw 'delete failed' }}
+    Write-Output "ALLOWED:$p"
+  }}
+  foreach ($action in @(
+    {{ [IO.File]::WriteAllText('./.agents/protected.txt', 'bad') }},
+    {{ [IO.File]::Delete('./.agents/protected.txt') }},
+    {{ [IO.Directory]::Move('./.agents', './renamed') }},
+    {{ [IO.File]::WriteAllText('{}', 'bad') }}
+  )) {{
+    $denied = $false
+    try {{ & $action }} catch {{ $denied = $true; Write-Output "DENIED:$($_.Exception.Message)" }}
+    if (-not $denied) {{ throw "protected operation succeeded: $action" }}
+  }}
+  Write-Output 'REOPENED-ROOT-PASS'
+}} catch {{ Write-Output "FAIL:$($_.Exception.Message)"; exit 1 }}"#,
+        powershell_literal(&fixture.path().join("outside.txt")),
+    );
+    let write_roots = vec![workspace.clone(), sessions];
+    let deny_paths = vec![AbsolutePathBuf::from_absolute_path(&protected).expect("absolute")];
+    current_thread_runtime().block_on(async {
+        let spawned = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
+            permission_profile: &PermissionProfile::workspace_write(),
+            workspace_roots: &workspace_roots_for(&workspace),
+            codex_home: &codex_home,
+            command: vec![
+                pwsh_path()
+                    .expect("PowerShell")
+                    .to_string_lossy()
+                    .into_owned(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                command,
+            ],
+            cwd: &workspace,
+            env_map: std::env::vars().collect(),
+            windows_sandbox_level: WindowsSandboxLevel::Elevated,
+            proxy_enforced: false,
+            network_proxy_restricting_sid: None,
+            proxy_settings_mode: crate::WindowsSandboxProxySettingsMode::Preserve,
+            timeout_ms: Some(30_000),
+            read_roots_override: None,
+            read_roots_include_platform_defaults: true,
+            write_roots_override: Some(&write_roots),
+            deny_read_paths_override: &[],
+            deny_write_paths_override: &deny_paths,
+            tty: false,
+            stdin_open: false,
+        })
+        .await
+        .unwrap_or_else(|err| panic!("spawn: {err:#}\n{}", sandbox_log(&codex_home)));
+        let (stdout, exit_code) =
+            collect_stdout_and_exit(spawned, &codex_home, Duration::from_secs(40)).await;
+        let stdout = String::from_utf8_lossy(&stdout);
+        println!("{stdout}");
+        assert_eq!(exit_code, 0, "stdout={stdout}");
+        assert!(stdout.contains("REOPENED-ROOT-PASS"));
+        assert_eq!(
+            fs::read_to_string(protected.join("protected.txt")).unwrap(),
+            "protected"
+        );
+    });
+}
+
+#[test]
 #[ignore = "requires this test binary in an installed test MSIX, launched with package identity, CODEX_WINDOWS_REGISTERED_CORE=1, and CODEX_HOME provisioned by that package's service in a disposable Windows VM"]
 fn registered_non_tty_cmd_forwards_env_output_and_exit() {
     assert!(

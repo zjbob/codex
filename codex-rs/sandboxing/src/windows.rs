@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::protocol::WritableRoot;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::SandboxType;
@@ -243,12 +242,10 @@ pub fn resolve_windows_elevated_filesystem_overrides(
 
     let split_writable_roots =
         file_system_sandbox_policy.get_writable_roots_with_cwd(sandbox_policy_cwd);
-    if has_reopened_writable_descendant(&split_writable_roots) {
-        return Err(
-            "windows elevated sandbox cannot reopen writable descendants under read-only carveouts directly; refusing to run unsandboxed"
-                .to_string(),
-        );
-    }
+    // The elevated account receives an explicit allow on each writable root.
+    // A descendant's explicit allow precedes inherited ancestor denies, while
+    // those denies still protect the ancestor and its other descendants.
+    // Preserve both the reopened roots and their ancestor carveouts below.
 
     let needs_direct_runtime_enforcement = file_system_sandbox_policy
         .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd);
@@ -383,19 +380,62 @@ fn permission_profile_display_name(permission_profile: &PermissionProfile) -> &'
     }
 }
 
-fn has_reopened_writable_descendant(writable_roots: &[WritableRoot]) -> bool {
-    writable_roots.iter().any(|writable_root| {
-        writable_root
-            .read_only_subpaths
-            .iter()
-            .any(|read_only_subpath| {
-                writable_roots.iter().any(|candidate| {
-                    candidate.root.as_path() != writable_root.root.as_path()
-                        && candidate
-                            .root
-                            .as_path()
-                            .starts_with(read_only_subpath.as_path())
-                })
-            })
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::permissions::{
+        FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSpecialPath,
+        NetworkSandboxPolicy,
+    };
+
+    #[test]
+    fn elevated_reopened_root_retains_ancestor_denial() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let cwd = AbsolutePathBuf::from_absolute_path(fixture.path()).expect("cwd");
+        let protected = cwd.join(".agents");
+        let reopened = protected.join("sessions");
+        std::fs::create_dir_all(&reopened).expect("create roots");
+        let profile = PermissionProfile::from_runtime_permissions(
+            &FileSystemSandboxPolicy::restricted(vec![
+                FileSystemSandboxEntry::new(
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::Root,
+                    },
+                    FileSystemAccessMode::Read,
+                ),
+                FileSystemSandboxEntry::new(cwd.clone().into(), FileSystemAccessMode::Write),
+                FileSystemSandboxEntry::new(protected.clone().into(), FileSystemAccessMode::Read),
+                FileSystemSandboxEntry::new(reopened.clone().into(), FileSystemAccessMode::Write),
+            ]),
+            NetworkSandboxPolicy::Enabled,
+        );
+        let overrides = resolve_windows_elevated_filesystem_overrides(
+            SandboxType::WindowsRestrictedToken,
+            &profile,
+            &cwd,
+            true,
+        )
+        .expect("elevated account supports reopening")
+        .expect("explicit roots and denies");
+        let roots = overrides.write_roots_override.unwrap_or_else(|| {
+            compatibility_sandbox_policy_for_permission_profile(&profile, cwd.as_path())
+                .get_writable_roots_with_cwd(&cwd)
+                .into_iter()
+                .map(|root| dunce::canonicalize(root.root.as_path()).unwrap())
+                .collect()
+        });
+        assert!(roots.contains(&dunce::canonicalize(cwd.as_path()).unwrap()));
+        assert!(roots.contains(&dunce::canonicalize(reopened.as_path()).unwrap()));
+        assert!(overrides.additional_deny_write_paths.contains(&protected));
+        assert!(
+            resolve_windows_restricted_token_filesystem_overrides(
+                SandboxType::WindowsRestrictedToken,
+                &profile,
+                &cwd,
+                WindowsSandboxLevel::RestrictedToken,
+            )
+            .is_err(),
+            "the signed-in-user backend must still reject reopening"
+        );
+    }
 }
