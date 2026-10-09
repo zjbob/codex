@@ -1,0 +1,18 @@
+{
+  "extensionVersion": "26.1007.21434",
+  "cliVersion": "0.162.0-alpha.17.2",
+  "sourceTag": "rust-v0.162.0-alpha.17.2",
+  "sourceCommit": "740e5af33c71225640e0c1c1555c514c2c93ab74",
+  "fixCommit": "925ba33594c31196483b43c7f82f797bd6184ede",
+  "rustVersion": "1.95.0",
+  "sqlLineEndings": "CRLF",
+  "expectedModel": "gpt-6.1-sol",
+  "officialFiles": {
+    "codex.exe": "f5521b058ca08e249afd3b25b4681e81100181d92e73aa6b94bb8e75c2aa487b",
+    "codex-windows-sandbox-setup.exe": "82b1fb2c227fb2ce7edd6e0c6493db3cb8574f1e51c74ac3d8f96ca945e39441",
+    "codex-resources/codex-windows-sandbox-setup.exe": "82b1fb2c227fb2ce7edd6e0c6493db3cb8574f1e51c74ac3d8f96ca945e39441",
+    "codex-command-runner.exe": "4fe83572a94138f05842be1707b5a2a26dad8230dc8a97386f8088eea656be0e",
+    "codex-resources/codex-command-runner.exe": "4fe83572a94138f05842be1707b5a2a26dad8230dc8a97386f8088eea656be0e"
+  },
+  "validatedLocalBuildSha256": "e931416f50ebbf4ceb58d6e97b5c4c22de0c747784fac3b1cdb2f6fcafbdf6ce"
+}
