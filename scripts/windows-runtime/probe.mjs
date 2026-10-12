@@ -44,6 +44,10 @@ const q = value => "'" + value.replaceAll("'", "''") + "'";
 const cases = [];
 const patch = (name, text, denied = false) => cases.push({ name, kind: 'patch', text: '*** Begin Patch\n' + text + '\n*** End Patch', denied });
 const shell = (name, text, denied = false) => cases.push({ name, kind: 'shell', text: "$ErrorActionPreference='Stop'; " + text, denied });
+const sandboxUsername = networkEnabled ? 'CodexSandboxOnline' : 'CodexSandboxOffline';
+// Environment home variables can exist even when the native account profile is missing.
+const userInfoScript = `const info = require('node:os').userInfo(); if (info.username.toLowerCase() !== '${sandboxUsername}'.toLowerCase() || !require('node:path').isAbsolute(info.homedir)) { throw new Error('Sandbox account profile did not resolve'); } console.log('SANDBOX-USER-INFO-PASS');`;
+shell('node-user-info', `& ${q(process.execPath)} -e ${q(userInfoScript)}; if ($LASTEXITCODE -ne 0) { throw 'Node userInfo failed' }`);
 shell('ordinary-read', "Get-Content -LiteralPath 'README.md'");
 shell('ordinary-write-delete', "[IO.File]::WriteAllText((Join-Path $PWD 'shell.txt'),'synthetic'); Get-Content -LiteralPath 'shell.txt'; Remove-Item -LiteralPath 'shell.txt'");
 shell('session-write-read-delete', `[IO.File]::WriteAllText((Join-Path $PWD ${q(own + '/shell.txt')}),'synthetic'); Get-Content -LiteralPath ${q(own + '/shell.txt')}; Remove-Item -LiteralPath ${q(own + '/shell.txt')}`);

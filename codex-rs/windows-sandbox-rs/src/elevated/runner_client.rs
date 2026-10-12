@@ -18,6 +18,8 @@ use crate::runner_pipe::create_named_pipe;
 use crate::runner_pipe::find_runner_exe;
 use crate::runner_pipe::pipe_pair;
 use crate::winutil::quote_windows_arg;
+use crate::winutil::resolve_sid;
+use crate::winutil::string_from_sid_bytes;
 use crate::winutil::to_wide;
 use anyhow::Context;
 use anyhow::Result;
@@ -35,14 +37,18 @@ use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS;
 use windows_sys::Win32::Foundation::DuplicateHandle;
 use windows_sys::Win32::Foundation::ERROR_ACCOUNT_DISABLED;
+use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_LOGON_FAILURE;
 use windows_sys::Win32::Foundation::ERROR_NO_SUCH_LOGON_SESSION;
 use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_SERVICE_ALREADY_RUNNING;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use windows_sys::Win32::System::Registry as registry;
 use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetCurrentThread;
@@ -343,6 +349,33 @@ fn connect_pipe_with_timeout(
     result
 }
 
+fn profile_logon_flags(sid: &str) -> Result<u32> {
+    let key = to_wide(format!(
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}"
+    ));
+    let mut size = 0;
+    let status = unsafe {
+        registry::RegGetValueW(
+            registry::HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            to_wide("ProfileImagePath").as_ptr(),
+            registry::RRF_RT_REG_SZ
+                | registry::RRF_RT_REG_EXPAND_SZ
+                | registry::RRF_NOEXPAND
+                | registry::RRF_SUBKEY_WOW6464KEY,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut size,
+        )
+    };
+    match status {
+        ERROR_SUCCESS if size > size_of::<u16>() as u32 => Ok(0),
+        ERROR_SUCCESS | ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(LOGON_WITH_PROFILE),
+        status => Err(std::io::Error::from_raw_os_error(status as i32))
+            .context("read sandbox account profile registration"),
+    }
+}
+
 pub(crate) fn spawn_runner_transport(
     codex_home: &Path,
     cwd: &Path,
@@ -408,19 +441,25 @@ pub(crate) fn spawn_runner_transport(
     si.dwFlags = STARTF_FORCEOFFFEEDBACK;
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
+    // Newly provisioned sandbox accounts need a Windows profile even without an
+    // execution alias. Otherwise GetUserProfileDirectoryW can return a zero-sized
+    // buffer and Node's os.userInfo() fails before tools such as tsx can start.
+    // Once registered, keep ordinary launches profile-free: repeated hive loads
+    // can stall concurrent sessions in the Windows User Profile Service.
+    let logon_flags = if registered_alias.is_some() {
+        LOGON_WITH_PROFILE
+    } else {
+        let sid = string_from_sid_bytes(&resolve_sid(&sandbox_creds.username)?)
+            .map_err(anyhow::Error::msg)?;
+        profile_logon_flags(&sid)?
+    };
     let previous_error_mode = unsafe { SetErrorMode(RUNNER_ERROR_MODE_FLAGS) };
-    // Execution aliases require the registered account's profile.
-    // Other launches retain their existing profile-free behavior.
     let spawn_res = unsafe {
         CreateProcessWithLogonW(
             user_w.as_ptr(),
             domain_w.as_ptr(),
             password_w.as_ptr(),
-            if registered_alias.is_some() {
-                LOGON_WITH_PROFILE
-            } else {
-                0
-            },
+            logon_flags,
             exe_w.as_ptr(),
             cmdline_vec.as_mut_ptr(),
             windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
@@ -481,6 +520,19 @@ pub(crate) fn spawn_runner_transport(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registered_system_profile_keeps_profile_free_logon() {
+        assert_eq!(super::profile_logon_flags("S-1-5-18").unwrap(), 0);
+    }
+
+    #[test]
+    fn absent_profile_requests_initial_profile_load() {
+        assert_eq!(
+            super::profile_logon_flags("S-1-5-21-0-0-0-4294967295").unwrap(),
+            windows_sys::Win32::System::Threading::LOGON_WITH_PROFILE
+        );
+    }
+
     use super::RunnerLogonError;
     use super::RunnerStartupError;
     use super::is_refreshable_sandbox_creds_error;
