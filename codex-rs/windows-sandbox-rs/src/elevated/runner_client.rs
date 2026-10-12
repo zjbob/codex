@@ -409,18 +409,15 @@ pub(crate) fn spawn_runner_transport(
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
     let previous_error_mode = unsafe { SetErrorMode(RUNNER_ERROR_MODE_FLAGS) };
-    // Execution aliases require the registered account's profile.
-    // Other launches retain their existing profile-free behavior.
+    // Newly provisioned sandbox accounts need a Windows profile even without an
+    // execution alias. Otherwise GetUserProfileDirectoryW can return a zero-sized
+    // buffer and Node's os.userInfo() fails before tools such as tsx can start.
     let spawn_res = unsafe {
         CreateProcessWithLogonW(
             user_w.as_ptr(),
             domain_w.as_ptr(),
             password_w.as_ptr(),
-            if registered_alias.is_some() {
-                LOGON_WITH_PROFILE
-            } else {
-                0
-            },
+            LOGON_WITH_PROFILE,
             exe_w.as_ptr(),
             cmdline_vec.as_mut_ptr(),
             windows_sys::Win32::System::Threading::CREATE_NO_WINDOW

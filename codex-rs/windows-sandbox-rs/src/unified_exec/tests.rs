@@ -13,6 +13,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
 use codex_utils_pty::ProcessSignal;
@@ -437,6 +438,62 @@ try {{
             "protected"
         );
     });
+}
+
+#[test]
+#[ignore = "requires matching sandbox helpers, provisioned CODEX_HOME, and CODEX_TEST_NODE pointing to node.exe"]
+fn elevated_node_user_info_resolves_sandbox_account_profile() {
+    let _account_guard =
+        WindowsSandboxAccountTestGuard::acquire().expect("lock Windows sandbox test accounts");
+    let _guard = legacy_process_test_guard();
+    let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("provisioned CODEX_HOME"));
+    let node = std::env::var("CODEX_TEST_NODE").expect("absolute path to node.exe");
+    let cwd = sandbox_cwd();
+    // Run on newly provisioned accounts to catch the first-launch case: an old
+    // account may already have a profile from an interactive or registered launch.
+    for (network, username) in [
+        (NetworkSandboxPolicy::Enabled, "CodexSandboxOnline"),
+        (NetworkSandboxPolicy::Restricted, "CodexSandboxOffline"),
+    ] {
+        let profile = PermissionProfile::workspace_write_with(&[], network, false, false);
+        let script = format!(
+            r#"try {{
+  const info = require('node:os').userInfo();
+  if (info.username.toLowerCase() !== '{username}'.toLowerCase() ||
+      !require('node:path').isAbsolute(info.homedir)) {{
+    throw new Error('sandbox account profile did not resolve');
+  }}
+  console.log('SANDBOX-USER-INFO-PASS');
+}} catch (error) {{ console.log(error.stack); process.exitCode = 1; }}"#,
+        );
+        current_thread_runtime().block_on(async {
+            let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
+                &profile,
+                &workspace_roots_for(&cwd),
+                &codex_home,
+                vec![node.clone(), "-e".into(), script],
+                &cwd,
+                std::env::vars().collect(),
+                false,
+                None,
+                Some(30_000),
+                None,
+                true,
+                None,
+                &[],
+                &[],
+                false,
+                false,
+            )
+            .await
+            .unwrap_or_else(|err| panic!("spawn: {err:#}\n{}", sandbox_log(&codex_home)));
+            let (stdout, exit_code) =
+                collect_stdout_and_exit(spawned, &codex_home, Duration::from_secs(40)).await;
+            let stdout = String::from_utf8_lossy(&stdout);
+            assert_eq!(exit_code, 0, "{username}: {stdout}");
+            assert!(stdout.contains("SANDBOX-USER-INFO-PASS"), "{stdout}");
+        });
+    }
 }
 
 #[test]
