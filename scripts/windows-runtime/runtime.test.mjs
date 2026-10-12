@@ -63,13 +63,25 @@ test('runtime copy refuses a junction before following it', () => fixture(root =
   try { assert.throws(() => assertPlainTree(tree), /Reparse/); }
   finally { fs.unlinkSync(link); }
 }));
-test('27 arbitrary successes or a reversed expected outcome cannot certify acceptance', () => {
-  for (const cases of [Array.from({ length: 27 }, (_, index) => ({ name: String(index), passed: true })), requiredCases.map(item => ({ ...item, expected: 'allowed', passed: true }))]) fixture(root => {
+test('arbitrary successes or a reversed expected outcome cannot certify acceptance', () => {
+  for (const cases of [Array.from({ length: requiredCases.length }, (_, index) => ({ name: String(index), passed: true })), requiredCases.map(item => ({ ...item, expected: 'allowed', passed: true }))]) fixture(root => {
     const binary = receipts(root);
     change(path.join(root, 'reopened.json'), { cases });
     assert.throws(() => checkEvidence(binary, root), /acceptance matrix/);
   });
 });
+test('filesystem-only success cannot hide an absent or failed Node profile check', () => {
+  for (const missing of [true, false]) fixture(root => {
+    const binary = receipts(root);
+    const file = path.join(root, 'reopened.json');
+    const receipt = JSON.parse(fs.readFileSync(file));
+    const cases = missing ? receipt.cases.filter(item => item.name !== 'node-user-info')
+      : receipt.cases.map(item => ({ ...item, passed: item.name !== 'node-user-info' }));
+    change(file, { cases });
+    assert.throws(() => checkEvidence(binary, root), /acceptance matrix/);
+  });
+});
+
 test('run directory rejects dotted children and junction aliases before creation', () => fixture(root => {
   const installed = path.join(root, 'installed'); fs.mkdirSync(installed);
   for (const child of ['..evidence', 'normal/deeper']) {

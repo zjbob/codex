@@ -9,7 +9,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 export const version = JSON.parse(fs.readFileSync(path.join(directory, 'version.json'), 'utf8'));
 const variants = ['base', 'reopened', 'offline', 'linked'];
 export const requiredCases = Object.freeze([
-  'ordinary-read', 'ordinary-write-delete', 'session-write-read-delete',
+  'node-user-info', 'ordinary-read', 'ordinary-write-delete', 'session-write-read-delete',
   'ordinary-add', 'ordinary-add-readback', 'ordinary-added-delete', 'ordinary-update',
   'hunk-delete', 'ordinary-patch-readback', 'ordinary-delete', 'session-add',
   'session-update', 'session-patch-readback', 'session-move', 'session-delete',
